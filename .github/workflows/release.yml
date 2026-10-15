@@ -1,0 +1,145 @@
+# Builds the Windows installer and attaches it to a GitHub Release.
+#
+# Push a tag like v1.0.1 to cut a release. Run the workflow manually
+# (Actions -> Release Windows installer -> Run workflow) to get a test build as
+# a downloadable artifact without publishing anything.
+name: Release Windows installer
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+# Needed by "gh release create" to push the installer to the Releases page.
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    # Must be Windows: jpackage only builds installers for the OS it runs on,
+    # and the .exe path additionally needs WiX, which is Windows-only.
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Put WiX 3 on the PATH
+        shell: pwsh
+        run: |
+          # jpackage on JDK 21 drives WiX through candle.exe and light.exe, which
+          # are WiX 3.x tools. WiX 4+ replaced both with a single wix.exe, and
+          # jpackage only learned to use that in JDK 24 - so "install the latest
+          # WiX" is the wrong move here and fails with "Can not find WiX tools".
+          # windows-latest ships WiX 3.14 already, so this step only has to find
+          # it and expose it.
+          $wixBin = if ($env:WIX) { Join-Path $env:WIX 'bin' } else { $null }
+
+          if (-not ($wixBin -and (Test-Path (Join-Path $wixBin 'candle.exe')))) {
+            $found = Get-ChildItem 'C:\Program Files (x86)' -Filter 'candle.exe' -Recurse -ErrorAction SilentlyContinue |
+                     Select-Object -First 1
+            if (-not $found) {
+              throw 'WiX 3 (candle.exe) was not found on this runner. Install it before building the .exe.'
+            }
+            $wixBin = $found.Directory.FullName
+          }
+
+          Write-Host "Using WiX from $wixBin"
+          Add-Content -Path $env:GITHUB_PATH -Value $wixBin
+
+      - name: Work out the version
+        id: version
+        shell: pwsh
+        run: |
+          # On a tag the tag is the source of truth, so the version baked into
+          # the installer always matches what people downloaded. A manual run has
+          # no tag, so the pom's own version stands and nothing is published.
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tag = $env:GITHUB_REF_NAME
+            $match = [regex]::Match($tag, '^v(\d+\.\d+\.\d+)(-.+)?$')
+            if (-not $match.Success) {
+              throw "Tag '$tag' must look like v1.2.3 or v1.2.3-beta.1."
+            }
+
+            # jpackage rejects any Windows app version that is not
+            # MAJOR.MINOR.PATCH, so a pre-release suffix is kept out of the build
+            # version and only marks the GitHub Release itself.
+            $core       = $match.Groups[1].Value
+            $prerelease = if ($match.Groups[2].Success) { 'true' } else { 'false' }
+            $publish    = 'true'
+          } else {
+            $core       = ''
+            $prerelease = 'false'
+            $publish    = 'false'
+          }
+
+          Write-Host "version=$core publish=$publish prerelease=$prerelease"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "core=$core"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "prerelease=$prerelease"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "publish=$publish"
+
+      - name: Stamp the version from the tag
+        if: steps.version.outputs.core != ''
+        shell: pwsh
+        run: >
+          mvn -B --no-transfer-progress
+          org.codehaus.mojo:versions-maven-plugin:2.16.2:set
+          "-DnewVersion=${{ steps.version.outputs.core }}"
+          -DgenerateBackupPoms=false
+
+      - name: Build the installer
+        shell: pwsh
+        run: mvn -B --no-transfer-progress clean package jpackage:jpackage
+
+      - name: Collect the build outputs
+        shell: pwsh
+        run: |
+          # Globbing rather than rebuilding file names by hand keeps this honest
+          # if the pom's finalName or version scheme changes.
+          $installer = Get-ChildItem 'target\dist\*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installer) {
+            throw 'No .exe was produced in target\dist - check the jpackage step above.'
+          }
+
+          $jar = Get-ChildItem 'target\*.jar' -ErrorAction SilentlyContinue | Select-Object -First 1
+
+          New-Item -ItemType Directory -Force -Path 'release-assets' | Out-Null
+          Copy-Item $installer.FullName 'release-assets'
+          if ($jar) { Copy-Item $jar.FullName 'release-assets' }
+
+          Get-ChildItem 'release-assets' | ForEach-Object {
+            Write-Host ("{0}  ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB))
+          }
+
+      - name: Upload the build outputs as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lipi-windows
+          path: release-assets/*
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: steps.version.outputs.publish == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ghArgs = @(
+            'release', 'create', $env:GITHUB_REF_NAME,
+            '--title', "Lipi $env:GITHUB_REF_NAME",
+            '--generate-notes'
+          )
+          if ('${{ steps.version.outputs.prerelease }}' -eq 'true') {
+            $ghArgs += '--prerelease'
+          }
+          $ghArgs += (Get-ChildItem 'release-assets').FullName
+
+          gh @ghArgs

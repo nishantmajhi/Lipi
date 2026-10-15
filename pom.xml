@@ -1,0 +1,349 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.lipi</groupId>
+    <artifactId>lipi</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>Lipi Font Manager</name>
+    <description>A cross-platform Nepali font manager built with Java Swing.</description>
+
+    <properties>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <mainClass>com.lipi.Lipi</mainClass>
+        <!-- Declared so ${skipTests} resolves when -DskipTests is not given. -->
+        <skipTests>false</skipTests>
+    </properties>
+
+    <!-- No JavaFX dependencies — Swing is bundled with every JDK/JRE. -->
+    <dependencies/>
+
+    <build>
+        <plugins>
+            <!--
+                Compiler.
+
+                One declaration, with every execution inside it. Maven merges
+                two declarations of the same plugin and warns that doing so
+                "threatens the stability of your build" - the merge order
+                decides whose configuration survives, which is not something to
+                leave to chance when one of the two carries the source and
+                target release.
+
+                Three executions:
+                  default-compile      the application, into target/classes
+                  compile-build-tools  src/build/java (the ICO converter), into
+                                       target/build-classes so it stays out of
+                                       the shipped JAR
+                  compile-tests        tests/java, into target/test-classes
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <source>${maven.compiler.source}</source>
+                    <target>${maven.compiler.target}</target>
+                </configuration>
+                <executions>
+                    <!--
+                        Step 1 of the icon pipeline: compile the build-time ICO
+                        converter. It lives in src/build/java - completely
+                        separate from the app sources - and is compiled into
+                        target/build-classes, which nothing packages.
+                    -->
+                    <execution>
+                        <id>compile-build-tools</id>
+                        <phase>generate-resources</phase>
+                        <goals><goal>compile</goal></goals>
+                        <configuration>
+                            <compileSourceRoots>
+                                <compileSourceRoot>${project.basedir}/src/build/java</compileSourceRoot>
+                            </compileSourceRoots>
+                            <outputDirectory>${project.build.directory}/build-classes</outputDirectory>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        The test suite lives in tests/java rather than
+                        src/test/java because it is not a Maven test source
+                        set: it has no JUnit and no test-scoped dependency of
+                        any kind, and Surefire would have nothing to run. It is
+                        compiled here so that "mvn test" checks the project,
+                        and it is also runnable on its own through
+                        tests/run.ps1 with no Maven at all.
+                    -->
+                    <execution>
+                        <id>compile-tests</id>
+                        <phase>test-compile</phase>
+                        <goals><goal>compile</goal></goals>
+                        <configuration>
+                            <compileSourceRoots>
+                                <compileSourceRoot>${project.basedir}/tests/java</compileSourceRoot>
+                            </compileSourceRoots>
+                            <outputDirectory>${project.build.testOutputDirectory}</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Create the executable JAR with Main-Class manifest entry -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.1</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <mainClass>${mainClass}</mainClass>
+                        </manifest>
+                    </archive>
+                    <finalName>${project.artifactId}-${project.version}</finalName>
+                </configuration>
+            </plugin>
+
+            <!--
+                Copy fonts/ and icons/ from the project root into target/
+                so that after "mvn clean package" the layout is:
+
+                    target/
+                    ├── lipi-1.0.0.jar
+                    ├── fonts/          ← .ttf / .otf files
+                    └── icons/          ← icon-16.png … icon-256.png
+
+                Lipi.getAppDir() resolves to target/ at runtime, so the app
+                finds both folders next to the JAR automatically.
+
+                filtering=false is required — font and image files are binary
+                and must not be processed by the Maven resource filter.
+
+                The fonts/ directory is allowed to be absent on a fresh clone
+                (the user adds their own .ttf/.otf files); we create it here
+                so the app does not show "directory not found" on first launch.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>3.3.1</version>
+                <executions>
+                    <execution>
+                        <id>copy-icons</id>
+                        <phase>package</phase>
+                        <goals><goal>copy-resources</goal></goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/icons</outputDirectory>
+                            <overwrite>true</overwrite>
+                            <resources>
+                                <resource>
+                                    <directory>${project.basedir}/icons</directory>
+                                    <filtering>false</filtering>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>copy-fonts</id>
+                        <phase>package</phase>
+                        <goals><goal>copy-resources</goal></goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/fonts</outputDirectory>
+                            <overwrite>true</overwrite>
+                            <resources>
+                                <resource>
+                                    <!--
+                                        If the fonts/ directory does not exist yet (fresh clone),
+                                        Maven will create an empty target/fonts/ directory.
+                                        The app handles an empty directory gracefully — it shows
+                                        "Showing 0 font(s)" rather than an error.
+                                    -->
+                                    <directory>${project.basedir}/fonts</directory>
+                                    <filtering>false</filtering>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+                Native installer (Windows .exe / macOS .dmg / Linux .deb).
+                Run with: mvn clean package jpackage:jpackage
+
+                The plugin calls the JDK's built-in jpackage tool — no extra
+                download needed as long as you have JDK 21+.
+
+                Windows prerequisite: WiX Toolset must be installed.
+                  winget install WiXToolset.WiX
+                  wix eula accept wix7
+                  wix extension add WixToolset.Util.wixext
+                  wix extension add WixToolset.UI.wixext
+            -->
+            <plugin>
+                <groupId>org.panteleyev</groupId>
+                <artifactId>jpackage-maven-plugin</artifactId>
+                <version>1.6.5</version>
+                <configuration>
+                    <!-- Input: directory containing the JAR + fonts/ + icons/ -->
+                    <input>${project.build.directory}</input>
+                    <mainJar>${project.artifactId}-${project.version}.jar</mainJar>
+                    <mainClass>${mainClass}</mainClass>
+
+                    <!-- Output installer goes to target/dist/ -->
+                    <destination>${project.build.directory}/dist</destination>
+                    <name>Lipi</name>
+                    <appVersion>${project.version}</appVersion>
+                    <vendor>Manish Majhi</vendor>
+                    <description>Nepali Font Manager</description>
+                    <copyright>Copyright 2025</copyright>
+
+                    <!--
+                        Windows requires an .ico file; macOS requires .icns; Linux uses .png.
+                        icon.ico is generated automatically from the PNG sources in icons/
+                        by the ConvertIcon build helper (see exec-maven-plugin below).
+                        If you are building on macOS/Linux and do not have an .icns file,
+                        remove or comment out the <icon> element — jpackage will use its
+                        own default icon rather than failing.
+                    -->
+                    <icon>${project.basedir}/icons/icon.ico</icon>
+
+                    <javaOptions>
+                        <option>-Dapp.dir=$APPDIR</option>
+                    </javaOptions>
+                    <addModules>
+                        <module>java.desktop</module>
+                        <module>java.logging</module>
+                        <module>java.naming</module>
+                    </addModules>
+
+                    <!-- Windows-specific settings -->
+                    <winDirChooser>true</winDirChooser>
+                    <winMenu>true</winMenu>
+                    <winShortcut>true</winShortcut>
+                    <winUpgradeUuid>a1b2c3d4-e5f6-7890-abcd-ef1234567890</winUpgradeUuid>
+                </configuration>
+            </plugin>
+
+            <!--
+                Step 2: run ConvertIcon to produce icons/icon.ico from the PNG
+                files in icons/. Runs at prepare-package so the .ico exists
+                before the jpackage plugin reads it.
+
+                The helper scales / re-uses whichever PNG sizes are present
+                (icon-16.png, icon-32.png, … icon-256.png, icon.png) and
+                writes a multi-resolution ICO that Windows uses for the
+                taskbar, Start Menu shortcut, and explorer thumbnails.
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.3.0</version>
+                <executions>
+                    <execution>
+                        <id>generate-ico</id>
+                        <phase>prepare-package</phase>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <mainClass>com.lipi.build.ConvertIcon</mainClass>
+                            <additionalClasspathElements>
+                                <additionalClasspathElement>
+                                    ${project.build.directory}/build-classes
+                                </additionalClasspathElement>
+                            </additionalClasspathElements>
+                            <arguments>
+                                <argument>${project.basedir}/icons</argument>
+                                <argument>${project.basedir}/icons/icon.ico</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        Run the test suite, so "mvn test" and "mvn package"
+                        actually check the project. Surefire has nothing to do
+                        here: the suite brings its own runner rather than a
+                        test framework.
+
+                        exec, not java: the "java" goal runs the main class in
+                        a thread inside Maven's own JVM, and this runner calls
+                        System.exit to report its result, which would take
+                        Maven down with it. Forking also means a failing suite
+                        fails the build through an exit code, the way it should.
+
+                        Skipped by -DskipTests, like any other test run.
+                    -->
+                    <execution>
+                        <id>run-tests</id>
+                        <phase>test</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <skip>${skipTests}</skip>
+                            <executable>${java.home}/bin/java</executable>
+                            <!--
+                                test scope, or the <classpath/> element expands
+                                to the runtime classpath only and the runner is
+                                not on it: "Could not find or load main class
+                                com.lipi.tests.Runner", which reads like a
+                                compile that did not happen rather than a
+                                classpath that is one directory short.
+                            -->
+                            <classpathScope>test</classpathScope>
+                            <arguments>
+                                <argument>-Djava.awt.headless=true</argument>
+                                <argument>-classpath</argument>
+                                <classpath/>
+                                <argument>com.lipi.tests.Runner</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+                Copy fonts/ and icons/ into target/ before jpackage runs so
+                they are picked up as part of the application image.
+                The maven-resources-plugin executions above already do this for
+                the regular "mvn package" run; this antrun execution ensures the
+                directories also exist when jpackage:jpackage is called standalone.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>ensure-fonts-dir</id>
+                        <phase>prepare-package</phase>
+                        <goals><goal>run</goal></goals>
+                        <configuration>
+                            <target>
+                                <!-- Create target/fonts/ even if source fonts/ is empty or missing -->
+                                <mkdir dir="${project.build.directory}/fonts"/>
+                                <copy todir="${project.build.directory}/fonts" failonerror="false">
+                                    <fileset dir="${project.basedir}/fonts" erroronmissingdir="false">
+                                        <include name="**/*.ttf"/>
+                                        <include name="**/*.otf"/>
+                                        <include name="**/*.TTF"/>
+                                        <include name="**/*.OTF"/>
+                                    </fileset>
+                                </copy>
+                                <copy todir="${project.build.directory}/icons" failonerror="false">
+                                    <fileset dir="${project.basedir}/icons" erroronmissingdir="false">
+                                        <include name="**/*"/>
+                                    </fileset>
+                                </copy>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+        </plugins>
+    </build>
+</project>
